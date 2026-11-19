@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""news-image-20261118 entry: draw one image summing up the world news of
-Wednesday 18 November 2026 and write it to /output/entry.png.
+"""The World In One Day - a bold poster summing up Wednesday 18 November 2026.
 
-Python 3.13 standard library only, no network, fully deterministic:
-the picture is drawn pixel by pixel with an own bitmap font and an own
-PNG encoder (zlib/struct), so two runs write exactly the same bytes.
-
-Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output.
+Pure Python 3.13 standard library. Deterministic: the same code always
+produces the same PNG bytes. Writes entry.png to MAKEFUN_OUTPUT_DIR
+when that variable is set, otherwise to /output.
 """
 
 import os
@@ -16,24 +13,81 @@ import zlib
 W = 1024
 H = 1024
 
-PAPER = (246, 241, 229)
-PANEL_BG = (255, 253, 247)
-INK = (22, 22, 30)
-WHITE = (255, 255, 255)
-GOLD = (198, 146, 42)
-RED = (166, 43, 37)
-BLUE = (32, 99, 155)
-UKRAINE_BLUE = (38, 84, 158)
-NAVY = (36, 54, 94)
-GREEN = (46, 125, 79)
-PURPLE = (75, 46, 131)
-SKY = (173, 205, 230)
-SEA = (70, 130, 180)
-YELLOW = (244, 197, 49)
-GREY = (120, 118, 110)
+# ---------------------------------------------------------------- canvas
+
+class Canvas:
+    """A plain RGB framebuffer with blocky, high-contrast drawing helpers."""
+
+    def __init__(self, width, height, colour):
+        self.w = width
+        self.h = height
+        self.px = bytearray(colour) * (width * height)
+
+    def rect(self, x, y, rw, rh, colour):
+        x0 = max(0, int(x)); y0 = max(0, int(y))
+        x1 = min(self.w, int(x + rw)); y1 = min(self.h, int(y + rh))
+        if x1 <= x0 or y1 <= y0:
+            return
+        row = bytes(colour) * (x1 - x0)
+        for yy in range(y0, y1):
+            off = (yy * self.w + x0) * 3
+            self.px[off:off + len(row)] = row
+
+    def dot(self, cx, cy, r, colour):
+        """A filled circle, stamped as horizontal runs."""
+        cx = int(cx); cy = int(cy); r = int(r)
+        for yy in range(cy - r, cy + r + 1):
+            if yy < 0 or yy >= self.h:
+                continue
+            dx = int((r * r - (yy - cy) * (yy - cy)) ** 0.5)
+            self.rect(cx - dx, yy, dx * 2 + 1, 1, colour)
+
+    def line(self, x0, y0, x1, y1, thick, colour):
+        steps = int(max(abs(x1 - x0), abs(y1 - y0))) + 1
+        r = max(1, thick // 2)
+        for i in range(steps + 1):
+            t = i / steps
+            self.dot(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, colour)
+
+    def tri(self, ax, ay, bx, by, cx, cy, colour):
+        """Filled triangle via scanline barycentric test on a coarse grid."""
+        x0 = int(max(0, min(ax, bx, cx))); x1 = int(min(self.w - 1, max(ax, bx, cx)))
+        y0 = int(max(0, min(ay, by, cy))); y1 = int(min(self.h - 1, max(ay, by, cy)))
+        den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+        if den == 0:
+            return
+        for yy in range(y0, y1 + 1, 2):
+            for xx in range(x0, x1 + 1, 2):
+                w0 = ((by - cy) * (xx - cx) + (cx - bx) * (yy - cy)) / den
+                w1 = ((cy - ay) * (xx - cx) + (ax - cx) * (yy - cy)) / den
+                w2 = 1.0 - w0 - w1
+                if w0 >= -0.02 and w1 >= -0.02 and w2 >= -0.02:
+                    self.rect(xx, yy, 2, 2, colour)
+
+# ---------------------------------------------------------------- png out
+
+def save_png(canvas, path):
+    raw = bytearray()
+    stride = canvas.w * 3
+    for yy in range(canvas.h):
+        raw.append(0)
+        raw += canvas.px[yy * stride:(yy + 1) * stride]
+
+    def chunk(tag, data):
+        out = struct.pack(">I", len(data)) + tag + data
+        out += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        return out
+
+    png = bytearray(b"\x89PNG\r\n\x1a\n")
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", canvas.w, canvas.h, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as fh:
+        fh.write(png)
+    return len(png)
 
 # ---------------------------------------------------------------- font
-# A 5x7 bitmap font, one tuple of 7 rows per glyph, '#' marks a lit cell.
+# A chunky 5x7 pixel font, drawn as solid blocks: bold at any size.
 
 FONT = {
     "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
@@ -49,7 +103,7 @@ FONT = {
     "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
     "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
     "M": ("#...#", "##.##", "#.#.#", "#.#.#", "#...#", "#...#", "#...#"),
-    "N": ("#...#", "##..#", "##..#", "#.#.#", "#..##", "#..##", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
     "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
     "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
     "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
@@ -62,10 +116,10 @@ FONT = {
     "X": ("#...#", ".#.#.", "..#..", "..#..", "..#..", ".#.#.", "#...#"),
     "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
     "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
-    "0": (".###.", "#...#", "#..##", "#.#.#", "##..#", "#...#", ".###."),
+    "0": (".###.", "#..##", "#.#.#", "##..#", "#...#", "#...#", ".###."),
     "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", "#####"),
     "2": (".###.", "#...#", "....#", "..##.", ".#...", "#....", "#####"),
-    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "3": ("#####", "...#.", "..#..", "...#.", "....#", "#...#", ".###."),
     "4": ("...#.", "..##.", ".#.#.", "#..#.", "#####", "...#.", "...#."),
     "5": ("#####", "#....", "####.", "....#", "....#", "#...#", ".###."),
     "6": (".###.", "#....", "#....", "####.", "#...#", "#...#", ".###."),
@@ -73,331 +127,241 @@ FONT = {
     "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
     "9": (".###.", "#...#", "#...#", ".####", "....#", "....#", ".###."),
     " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    ":": (".....", "..#..", "..#..", ".....", "..#..", "..#..", "....."),
     ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
     ",": (".....", ".....", ".....", ".....", ".##..", ".##..", ".#..."),
-    ";": (".....", ".##..", ".##..", ".....", ".##..", ".##..", ".#..."),
-    ":": (".....", ".##..", ".##..", ".....", ".....", ".##..", ".##.."),
-    "'": (".##..", ".##..", ".#...", ".....", ".....", ".....", "....."),
-    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
-    "?": (".###.", "#...#", "....#", "..##.", "..#..", ".....", "..#.."),
-    "-": (".....", ".....", ".....", "#####", ".....", ".....", "....."),
-    "&": (".##..", "#..#.", "#.#..", ".#...", "#.#.#", "#..#.", ".##.#"),
     "/": ("....#", "....#", "...#.", "..#..", ".#...", "#....", "#...."),
-    "(": ("...##", "..#..", ".#...", ".#...", ".#...", "..#..", "...##"),
-    ")": (".##..", "..#..", "...#.", "...#.", "...#.", "..#..", ".##.."),
-    "%": ("##..#", "##.#.", "....#", "...#.", "..#..", ".#...", "#..##"),
-    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    "!": ("..#..", "..#..", "..#..", "..#..", "..#..", ".....", "..#.."),
 }
 
-
-def text_width(s, scale, bold=False):
-    if not s:
+def text_width(text, scale):
+    if not text:
         return 0
-    w = len(s) * 6 * scale - scale
-    if bold:
-        w += max(1, scale // 3)
-    return w
+    return len(text) * (5 * scale + scale - 1) - (scale - 1)
 
+def draw_text(cv, x, y, text, scale, colour):
+    pitch = 5 * scale + scale - 1
+    for i, ch in enumerate(text.upper()):
+        glyph = FONT.get(ch, FONT[" "])
+        gx = x + i * pitch
+        for row in range(7):
+            bits = glyph[row]
+            for col in range(5):
+                if bits[col] == "#":
+                    cv.rect(gx + col * scale, y + row * scale, scale, scale, colour)
 
-def wrap_text(s, scale, max_width, bold=False):
-    """Greedy word wrap: split s into lines no wider than max_width."""
-    lines = []
-    current = ""
-    for word in s.split(" "):
-        trial = word if not current else current + " " + word
-        if text_width(trial, scale, bold) <= max_width:
-            current = trial
-        else:
-            if current:
-                lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
+def draw_centered(cv, cx, y, text, scale, colour):
+    draw_text(cv, cx - text_width(text, scale) // 2, y, text, scale, colour)
 
+# ---------------------------------------------------------------- palette
 
-# ---------------------------------------------------------------- canvas
+INK    = (10, 14, 26)
+PAPER  = (246, 244, 238)
+WHITE  = (255, 255, 255)
+YELLOW = (255, 205, 40)
+RED    = (214, 40, 44)
+BLUE   = (36, 96, 200)
+SKY    = (120, 190, 240)
+SEA    = (18, 84, 148)
+ORANGE = (255, 130, 30)
+GREEN  = (30, 160, 90)
+TEAL   = (14, 130, 140)
+PURPLE = (86, 52, 160)
+GREY   = (96, 104, 118)
+BROWN  = (140, 96, 52)
 
-class Canvas:
-    def __init__(self, w, h, bg):
-        self.w = w
-        self.h = h
-        self.buf = bytearray(bg) * (w * h)
+# ---------------------------------------------------------------- scenes
+# Each scene fills a box (x, y, w, h = 494 x 138) with one bold picture.
 
-    def px(self, x, y, color):
-        if 0 <= x < self.w and 0 <= y < self.h:
-            i = (y * self.w + x) * 3
-            self.buf[i:i + 3] = bytes(color)
+def scene_gulf(cv, x, y, w, h):
+    """Missile arc over the Strait of Hormuz, ship below, burst at impact."""
+    cv.rect(x, y, w, h - 26, SEA)
+    cv.rect(x, y + h - 26, w, 26, (10, 52, 96))
+    # missile body, nose up-right, flame behind
+    cv.line(x + 92, y + 92, x + 196, y + 34, 13, WHITE)
+    cv.line(x + 92, y + 92, x + 66, y + 106, 15, ORANGE)
+    cv.line(x + 78, y + 99, x + 58, y + 112, 9, RED)
+    # dashed arc of the strike path
+    for t in range(9):
+        cv.dot(x + 210 + t * 22, y + 30 + int(26 * ((t / 8) ** 2)), 4, YELLOW)
+    # explosion burst where it lands
+    bx, by = x + 392, y + 62
+    for ang in range(0, 360, 30):
+        import math
+        ex = bx + int(38 * math.cos(math.radians(ang)))
+        ey = by + int(38 * math.sin(math.radians(ang)))
+        cv.line(bx, by, ex, ey, 7, ORANGE)
+    cv.dot(bx, by, 15, YELLOW)
+    cv.dot(bx, by, 8, WHITE)
+    # warship silhouette on the water line
+    cv.rect(x + 60, y + h - 40, 150, 14, INK)
+    cv.rect(x + 96, y + h - 54, 52, 14, INK)
+    cv.rect(x + 116, y + h - 66, 10, 12, INK)
 
-    def rect(self, x, y, w, h, color):
-        x0 = max(0, x)
-        y0 = max(0, y)
-        x1 = min(self.w, x + w)
-        y1 = min(self.h, y + h)
-        if x0 >= x1 or y0 >= y1:
-            return
-        row = bytes(color) * (x1 - x0)
-        for yy in range(y0, y1):
-            i = (yy * self.w + x0) * 3
-            self.buf[i:i + len(row)] = row
+def scene_apec(cv, x, y, w, h):
+    """Two leaders shaking hands under a gold APEC sun."""
+    cv.rect(x, y, w, h, RED)
+    cv.dot(x + w // 2, y + 34, 22, YELLOW)
+    for dx in (-120, -80, 80, 120):
+        cv.dot(x + w // 2 + dx, y + 26, 5, YELLOW)
+    # left figure
+    cv.dot(x + 148, y + 62, 17, PAPER)
+    cv.rect(x + 128, y + 78, 40, 52, INK)
+    # right figure
+    cv.dot(x + w - 148, y + 62, 17, PAPER)
+    cv.rect(x + w - 168, y + 78, 40, 52, BLUE)
+    # arms meeting in the middle, clasped hands
+    cv.line(x + 168, y + 92, x + w // 2 - 8, y + 106, 11, INK)
+    cv.line(x + w - 168, y + 92, x + w // 2 + 8, y + 106, 11, BLUE)
+    cv.dot(x + w // 2, y + 106, 10, PAPER)
+    # banner strip
+    cv.rect(x + 60, y + h - 20, w - 120, 8, YELLOW)
 
-    def frame(self, x, y, w, h, color, t):
-        self.rect(x, y, w, t, color)
-        self.rect(x, y + h - t, w, t, color)
-        self.rect(x, y, t, h, color)
-        self.rect(x + w - t, y, t, h, color)
+def scene_bridge(cv, x, y, w, h):
+    """The Kerch Bridge: two towers, the middle span fallen into the sea."""
+    cv.rect(x, y, w, h - 30, SKY)
+    cv.rect(x, y + h - 30, w, 30, SEA)
+    # towers
+    cv.rect(x + 84, y + 26, 16, 82, GREY)
+    cv.rect(x + w - 100, y + 26, 16, 82, GREY)
+    # cables
+    cv.line(x + 92, y + 26, x + 40, y + 76, 4, INK)
+    cv.line(x + w - 92, y + 26, x + w - 40, y + 76, 4, INK)
+    cv.line(x + 92, y + 26, x + w // 2 - 40, y + 70, 4, INK)
+    cv.line(x + w - 92, y + 26, x + w // 2 + 40, y + 70, 4, INK)
+    # standing deck left and right
+    cv.rect(x + 20, y + 72, w // 2 - 62, 12, INK)
+    cv.rect(x + w // 2 + 42, y + 72, w // 2 - 62, 12, INK)
+    # the fallen span, tilted down into the water
+    cv.line(x + w // 2 - 42, y + 78, x + w // 2 + 42, y + 106, 13, RED)
+    # splash marks
+    for dx in (-26, 0, 26):
+        cv.line(x + w // 2 + dx, y + h - 30, x + w // 2 + dx - 6, y + h - 48, 5, WHITE)
+    # drone overhead
+    cv.dot(x + w - 70, y + 22, 7, INK)
+    cv.line(x + w - 88, y + 22, x + w - 52, y + 22, 5, INK)
+    cv.line(x + w - 70, y + 12, x + w - 70, y + 32, 5, INK)
 
-    def line(self, x0, y0, x1, y1, color, t=3):
-        dx = abs(x1 - x0)
-        dy = -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        r = max(0, t // 2)
-        while True:
-            self.rect(x0 - r, y0 - r, 2 * r + 1, 2 * r + 1, color)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
+def scene_senate(cv, x, y, w, h):
+    """Bar chart of the new Senate: blue 56, red 44."""
+    cv.rect(x, y, w, h, PAPER)
+    base = y + h - 36
+    # blue bar, 56 seats, its number inside the bar in white
+    cv.rect(x + 110, base - 92, 84, 92, BLUE)
+    draw_centered(cv, x + 152, base - 62, "56", 5, WHITE)
+    # red bar, 44 seats
+    cv.rect(x + 300, base - 72, 84, 72, RED)
+    draw_centered(cv, x + 342, base - 42, "44", 5, WHITE)
+    # baseline and party ticks
+    cv.rect(x + 60, base, w - 120, 6, INK)
+    draw_centered(cv, x + 152, base + 10, "DEM", 3, INK)
+    draw_centered(cv, x + 342, base + 10, "REP", 3, INK)
+    # a gold star for the flipped Alaska seat
+    sx, sy = x + 42, y + 30
+    cv.line(sx, sy - 14, sx, sy + 14, 6, YELLOW)
+    cv.line(sx - 13, sy - 5, sx + 13, sy + 9, 6, YELLOW)
+    cv.line(sx + 13, sy - 5, sx - 13, sy + 9, 6, YELLOW)
 
-    def disc(self, cx, cy, r, color):
-        for yy in range(cy - r, cy + r + 1):
-            dyy = yy - cy
-            span = int((r * r - dyy * dyy) ** 0.5)
-            self.rect(cx - span, yy, 2 * span + 1, 1, color)
+def scene_health(cv, x, y, w, h):
+    """A medical cross beside a spiked virus ball: two outbreaks, one panel."""
+    cv.rect(x, y, w, h, (240, 246, 244))
+    # red cross in a white badge, left
+    cv.dot(x + 92, y + h // 2, 44, WHITE)
+    cv.rect(x + 80, y + h // 2 - 30, 24, 60, RED)
+    cv.rect(x + 62, y + h // 2 - 12, 60, 24, RED)
+    # virus ball, right
+    vx, vy = x + w - 130, y + h // 2
+    import math
+    for ang in range(0, 360, 36):
+        ex = vx + int(52 * math.cos(math.radians(ang)))
+        ey = vy + int(52 * math.sin(math.radians(ang)))
+        cv.line(vx, vy, ex, ey, 7, TEAL)
+        cv.dot(ex, ey, 8, TEAL)
+    cv.dot(vx, vy, 36, TEAL)
+    cv.dot(vx - 12, vy - 8, 7, WHITE)
+    cv.dot(vx + 10, vy + 10, 6, WHITE)
+    cv.dot(vx + 14, vy - 14, 5, WHITE)
+    # rising case dots between them
+    for i, dy in enumerate((34, 22, 8, -10)):
+        cv.dot(x + 218 + i * 26, y + h // 2 + dy, 6, ORANGE)
 
-    def poly(self, pts, color):
-        ys = [p[1] for p in pts]
-        for yy in range(min(ys), max(ys) + 1):
-            nodes = []
-            n = len(pts)
-            for i in range(n):
-                x0, y0 = pts[i]
-                x1, y1 = pts[(i + 1) % n]
-                if (y0 <= yy < y1) or (y1 <= yy < y0):
-                    nodes.append(x0 + (yy - y0) * (x1 - x0) // (y1 - y0))
-            nodes.sort()
-            for i in range(0, len(nodes) - 1, 2):
-                self.rect(nodes[i], yy, nodes[i + 1] - nodes[i] + 1, 1, color)
+def scene_voyager(cv, x, y, w, h):
+    """Voyager 1 in deep black space: big dish, long boom, tiny Earth."""
+    cv.rect(x, y, w, h, (4, 6, 18))
+    # stars
+    seed = 7
+    for _ in range(46):
+        seed = (seed * 1103515245 + 12345) % (2 ** 31)
+        sx = x + seed % (w - 16) + 8
+        seed = (seed * 1103515245 + 12345) % (2 ** 31)
+        sy = y + seed % (h - 16) + 8
+        cv.rect(sx, sy, 3, 3, WHITE)
+    # probe: dish, bus, boom
+    cv.dot(x + 150, y + 62, 34, PAPER)
+    cv.dot(x + 150, y + 62, 34 - 7, (196, 200, 208))
+    cv.dot(x + 150, y + 62, 6, INK)
+    cv.rect(x + 182, y + 56, 44, 12, GREY)
+    cv.line(x + 226, y + 62, x + 356, y + 30, 6, GREY)
+    cv.dot(x + 362, y + 28, 8, YELLOW)
+    cv.line(x + 190, y + 70, x + 268, y + 108, 6, GREY)
+    # signal waves travelling home
+    for i in range(3):
+        cv.line(x + 118 - i * 22, y + 48 + i * 4, x + 118 - i * 22, y + 76 - i * 4, 5, SKY)
+    # Earth: one small blue dot, very far away
+    cv.dot(x + 52, y + 108, 9, BLUE)
+    cv.dot(x + 49, y + 105, 3, GREEN)
 
-    def text(self, x, y, s, scale, color, bold=False):
-        dx = max(1, scale // 3) if bold else 0
-        cx = x
-        for ch in s:
-            glyph = FONT.get(ch, FONT[" "])
-            for r in range(7):
-                row = glyph[r]
-                for c in range(5):
-                    if row[c] == "#":
-                        self.rect(cx + c * scale, y + r * scale, scale, scale, color)
-                        if dx:
-                            self.rect(cx + c * scale + dx, y + r * scale,
-                                      scale, scale, color)
-            cx += 6 * scale
-        return cx - x
-
-    def text_centered(self, y, s, scale, color, bold=False):
-        w = text_width(s, scale, bold)
-        self.text((self.w - w) // 2, y, s, scale, color, bold)
-
-    def text_block(self, x, y, s, scale, color, max_width, line_h,
-                   bold=False, max_lines=None):
-        lines = wrap_text(s, scale, max_width, bold)
-        if max_lines is not None:
-            lines = lines[:max_lines]
-        for i, ln in enumerate(lines):
-            self.text(x, y + i * line_h, ln, scale, color, bold)
-        return len(lines)
-
-
-# ---------------------------------------------------------------- icons
-# Each icon is drawn inside a box of about 88 x 60 px at (x, y).
-
-def icon_missile(cv, x, y):
-    # a missile flying up-right over sea waves
-    cv.poly([(x + 26, y + 38), (x + 58, y + 2), (x + 70, y + 6),
-             (x + 46, y + 42), (x + 34, y + 46)], INK)
-    cv.poly([(x + 28, y + 36), (x + 16, y + 48), (x + 34, y + 46)], RED)
-    cv.poly([(x + 22, y + 42), (x + 8, y + 56), (x + 28, y + 50)], GOLD)
-    for i, wx in enumerate(range(x + 2, x + 84, 16)):
-        wy = y + 52 + (4 if i % 2 else 0)
-        cv.line(wx, wy, wx + 10, wy - 4, SEA, 3)
-
-
-def icon_flags(cv, x, y):
-    # three summit flags on poles
-    for i, col in enumerate([RED, GOLD, BLUE]):
-        px = x + 12 + i * 30
-        cv.rect(px, y + 6, 3, 48, INK)
-        cv.rect(px + 3, y + 6, 22, 14, col)
-    cv.rect(x + 2, y + 54, 86, 4, INK)
-
-
-def icon_bridge(cv, x, y):
-    # a suspension bridge whose middle span has broken and dropped
-    cv.rect(x + 14, y + 4, 6, 38, INK)
-    cv.rect(x + 66, y + 4, 6, 38, INK)
-    cv.line(x + 17, y + 4, x + 4, y + 32, GREY, 2)
-    cv.line(x + 17, y + 4, x + 36, y + 32, GREY, 2)
-    cv.line(x + 69, y + 4, x + 52, y + 32, GREY, 2)
-    cv.line(x + 69, y + 4, x + 84, y + 32, GREY, 2)
-    cv.rect(x + 2, y + 32, 36, 5, INK)
-    cv.rect(x + 52, y + 32, 34, 5, INK)
-    cv.line(x + 38, y + 34, x + 52, y + 44, RED, 5)
-    for i, wx in enumerate(range(x + 2, x + 84, 16)):
-        wy = y + 52 + (4 if i % 2 else 0)
-        cv.line(wx, wy, wx + 10, wy - 4, SEA, 3)
-
-
-def icon_dome(cv, x, y):
-    # a capitol dome on columns
-    cv.disc(x + 44, y + 26, 20, NAVY)
-    cv.rect(x + 24, y + 26, 40, 6, PAPER)
-    cv.rect(x + 42, y + 0, 4, 8, NAVY)
-    cv.disc(x + 44, y + 2, 3, GOLD)
-    cv.rect(x + 16, y + 32, 56, 4, INK)
-    for i in range(4):
-        cv.rect(x + 20 + i * 14, y + 36, 5, 14, INK)
-    cv.rect(x + 14, y + 50, 60, 4, INK)
-
-
-def icon_health(cv, x, y):
-    # a medical cross badge with virus dots around it
-    cv.disc(x + 44, y + 28, 22, RED)
-    cv.rect(x + 39, y + 14, 10, 28, WHITE)
-    cv.rect(x + 30, y + 23, 28, 10, WHITE)
-    for (dx, dy) in [(6, 6), (78, 4), (82, 44), (4, 46), (70, 54), (14, 56)]:
-        cv.disc(x + dx, y + dy, 4, GREEN)
-        cv.line(x + dx, y + dy, x + dx + 6, y + dy - 6, GREEN, 2)
-
-
-def icon_probe(cv, x, y):
-    # a deep-space probe: dish, body, boom, stars
-    for (sx, sy) in [(8, 6), (76, 2), (84, 30), (64, 52), (6, 34)]:
-        cv.rect(x + sx, y + sy, 3, 3, GOLD)
-    cv.poly([(x + 10, y + 10), (x + 42, y + 26), (x + 10, y + 42)], BLUE)
-    cv.line(x + 32, y + 26, x + 52, y + 26, INK, 3)
-    cv.rect(x + 52, y + 20, 14, 12, INK)
-    cv.line(x + 66, y + 26, x + 84, y + 10, INK, 2)
-    cv.disc(x + 85, y + 9, 3, RED)
-    cv.line(x + 59, y + 32, x + 59, y + 48, INK, 3)
-    cv.line(x + 48, y + 48, x + 70, y + 48, GOLD, 3)
-
-
-ICONS = [icon_missile, icon_flags, icon_bridge, icon_dome, icon_health,
-         icon_probe]
-
-# ---------------------------------------------------------------- content
+# ---------------------------------------------------------------- layout
 
 PANELS = [
-    ("MIDDLE EAST", RED, icon_missile,
-     "US BOMBS IRAN, IRAN HITS BACK",
-     "US JETS HIT A GUARDS SITE ON QESHM ISLAND; IRAN HIT BASES IN "
-     "KUWAIT, BAHRAIN."),
-    ("ASIA-PACIFIC", BLUE, icon_flags,
-     "XI, PUTIN MEET AT APEC",
-     "XI PROMISED TO FIGHT PROTECTIONISM; PUTIN HIT SANCTIONS. "
-     "A TRUMP SUMMIT FOLLOWS."),
-    ("UKRAINE", UKRAINE_BLUE, icon_bridge,
-     "UKRAINE HITS KERCH BRIDGE",
-     "ITS ROADWAY PARTLY FELL AFTER SECOND-DAY STRIKES. 141 DRONES; "
-     "SIX HURT IN DNIPRO."),
-    ("UNITED STATES", NAVY, icon_dome,
-     "SENATE GOES 56-44",
-     "IN ALASKA, MARY PELTOLA BEAT DAN SULLIVAN: DEMOCRATS' BIGGEST "
-     "MAJORITY SINCE 2009."),
-    ("HEALTH", GREEN, icon_health,
-     "US LOSES MEASLES STATUS",
-     "AFTER 26 YEARS, 5,412 CASES ENDED US ELIMINATION. CONGO EBOLA: "
-     "11,000 CASES."),
-    ("SPACE", PURPLE, icon_probe,
-     "VOYAGER 1: A LIGHT-DAY OUT",
-     "THE FARTHEST HUMAN-MADE OBJECT EVER: 16 BILLION MILES OUT, "
-     "A LIGHT-DAY AWAY."),
+    # scene,       title line 1,       title line 2,      subline,                 accent
+    (scene_gulf,   "US STRIKES IRAN",  "AT HORMUZ",       "MISSILE SITE HIT",      RED),
+    (scene_apec,   "XI + PUTIN MEET",  "IN SHENZHEN",     "APEC SUMMIT OPENS",     YELLOW),
+    (scene_bridge, "KERCH BRIDGE",     "SPAN COLLAPSES",  "UKRAINE STRIKE DAY 2",  ORANGE),
+    (scene_senate, "ALASKA FLIPS",     "SENATE 56-44",    "DEMOCRATS TAKE SEAT",   BLUE),
+    (scene_health, "US LOSES MEASLES", "EBOLA IN CONGO",  "LOST AFTER 26 YEARS",   TEAL),
+    (scene_voyager, "VOYAGER 1",       "ONE LIGHT-DAY",   "FARTHEST OBJECT EVER",  PURPLE),
 ]
 
-FOOTER = ("ALSO TODAY: KNESSET ELECTS KAHANA SPEAKER - PEACE BOARD FAULTS "
-          "ISRAEL, HAMAS - WHO: 950,000 IN GAZA FACE FLOODS")
+def masthead(cv):
+    # red kicker strip
+    cv.rect(0, 0, W, 40, RED)
+    draw_centered(cv, W // 2, 8, "THE WORLD IN ONE DAY", 3, WHITE)
+    # the day, named as large as the canvas allows
+    cv.rect(0, 40, W, 172, INK)
+    draw_centered(cv, W // 2, 50, "WEDNESDAY", 15, WHITE)
+    draw_centered(cv, W // 2, 162, "18 NOVEMBER 2026", 6, YELLOW)
 
+def panel(cv, x, y, w, h, scene, line1, line2, sub, accent):
+    scene(cv, x, y, w, 138)
+    # black title strip: white titles, coloured subline, accent rule
+    cv.rect(x, y + 138, w, h - 138, INK)
+    cv.rect(x, y + 138, w, 6, accent)
+    draw_text(cv, x + 14, y + 150, line1, 5, WHITE)
+    draw_text(cv, x + 14, y + 188, line2, 5, WHITE)
+    # sublines get a brightened tint so they stay readable at 300 px wide
+    sub_colour = {BLUE: SKY, TEAL: (64, 224, 208), PURPLE: (200, 160, 255)}.get(accent, accent)
+    draw_text(cv, x + 14, y + 226, sub, 4, sub_colour)
 
-def draw_panel(cv, x, y, w, h, panel):
-    cat, color, icon, headline, caption = panel
-    cv.rect(x, y, w, h, PANEL_BG)
-    cv.frame(x, y, w, h, INK, 2)
-    cv.rect(x, y, w, 26, color)
-    cv.text(x + 12, y + 3, cat, 3, WHITE, bold=True)
-    icon(cv, x + 14, y + 38)
-    cv.text_block(x + 114, y + 36, headline, 4, INK, w - 114 - 12, 31,
-                  bold=True, max_lines=2)
-    cv.text_block(x + 12, y + 104, caption, 3, INK, w - 24, 24,
-                  max_lines=4)
-
-
-def build_image():
-    cv = Canvas(W, H, PAPER)
-    cv.frame(10, 10, W - 20, H - 20, INK, 3)
-    cv.frame(18, 18, W - 36, H - 36, INK, 1)
-
-    # masthead
-    cv.text_centered(28, "THE DAY'S WORLD NEWS IN ONE PICTURE", 3, RED,
-                     bold=True)
-    cv.text_centered(58, "THE WORLD IN ONE DAY", 7, INK, bold=True)
-    cv.rect(24, 118, W - 48, 5, INK)
-    cv.rect(24, 128, W - 48, 2, INK)
-    cv.text_centered(142, "WEDNESDAY", 10, INK, bold=True)
-    cv.text_centered(220, "18 NOVEMBER 2026", 9, RED, bold=True)
-    cv.rect(24, 292, W - 48, 2, INK)
-
-    # six story panels, two columns by three rows
-    pw, ph = 482, 198
-    for i, panel in enumerate(PANELS):
-        col = i % 2
-        row = i // 2
-        x = 24 + col * (pw + 12)
-        y = 302 + row * (ph + 10)
-        draw_panel(cv, x, y, pw, ph, panel)
-
-    # footer strip: three caption lines inside the dark band
-    fy = 924
-    cv.rect(24, fy, W - 48, 76, INK)
-    cv.text_block(40, fy + 5, FOOTER, 3, WHITE, W - 80, 23, max_lines=3)
+def build():
+    cv = Canvas(W, H, INK)
+    masthead(cv)
+    top = 224
+    pw, ph, gap, mx = 494, 258, 12, 12
+    for i, (scene, l1, l2, sub, acc) in enumerate(PANELS):
+        col, row = i % 2, i // 2
+        panel(cv, mx + col * (pw + gap), top + row * (ph + gap),
+              pw, ph, scene, l1, l2, sub, acc)
     return cv
 
-
-# ---------------------------------------------------------------- png out
-
-def encode_png(cv):
-    def chunk(tag, data):
-        out = struct.pack(">I", len(data)) + tag + data
-        out += struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        return out
-
-    raw = bytearray()
-    stride = cv.w * 3
-    for yy in range(cv.h):
-        raw.append(0)
-        raw += cv.buf[yy * stride:(yy + 1) * stride]
-    ihdr = struct.pack(">IIBBBBB", cv.w, cv.h, 8, 2, 0, 0, 0)
-    png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", ihdr)
-    png += chunk(b"IDAT", zlib.compress(bytes(raw), 9))
-    png += chunk(b"IEND", b"")
-    return png
-
-
 def main():
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
     os.makedirs(out_dir, exist_ok=True)
-    data = encode_png(build_image())
-    with open(os.path.join(out_dir, "entry.png"), "wb") as fh:
-        fh.write(data)
-
+    size = save_png(build(), os.path.join(out_dir, "entry.png"))
+    print(f"entry.png written: {size} bytes, {W}x{H}")
 
 if __name__ == "__main__":
     main()
